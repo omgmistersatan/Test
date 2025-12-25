@@ -433,6 +433,14 @@ setup_vm_image() {
 
     print_status "INFO" "Creating cloud-init configuration..."
     
+    # Generate password hash for cloud-init
+    local password_hash
+    if command -v openssl >/dev/null 2>&1; then
+        password_hash=$(openssl passwd -6 "$PASSWORD" 2>/dev/null || echo "$PASSWORD")
+    else
+        password_hash="$PASSWORD"
+    fi
+    
     cat > user-data <<EOF
 #cloud-config
 hostname: $HOSTNAME
@@ -440,8 +448,10 @@ manage_etc_hosts: true
 users:
   - name: $USERNAME
     sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin, sudo
     shell: /bin/bash
     lock_passwd: false
+    passwd: $password_hash
 ssh_pwauth: true
 disable_root: false
 chpasswd:
@@ -456,8 +466,14 @@ packages:
   - net-tools
   - openssh-server
 runcmd:
-  - [systemctl, enable, ssh]
-  - [systemctl, start, ssh]
+  - systemctl enable ssh
+  - systemctl start ssh
+  - echo "root:$PASSWORD" | chpasswd
+  - echo "$USERNAME:$PASSWORD" | chpasswd
+  - sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+  - sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+  - sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/g' /etc/ssh/sshd_config
+  - systemctl restart ssh
   - echo "Welcome to $HOSTNAME" > /etc/motd
 final_message: "System ready! Login with $USERNAME / $PASSWORD"
 EOF
@@ -503,6 +519,14 @@ start_vm() {
         if [[ ! -f "$SEED_FILE" ]]; then
             print_status "WARN" "Seed file not found, recreating..."
             
+            # Generate password hash
+            local password_hash
+            if command -v openssl >/dev/null 2>&1; then
+                password_hash=$(openssl passwd -6 "$PASSWORD" 2>/dev/null || echo "$PASSWORD")
+            else
+                password_hash="$PASSWORD"
+            fi
+            
             cat > user-data <<EOF
 #cloud-config
 hostname: $HOSTNAME
@@ -510,8 +534,10 @@ manage_etc_hosts: true
 users:
   - name: $USERNAME
     sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin, sudo
     shell: /bin/bash
     lock_passwd: false
+    passwd: $password_hash
 ssh_pwauth: true
 disable_root: false
 chpasswd:
@@ -526,8 +552,14 @@ packages:
   - net-tools
   - openssh-server
 runcmd:
-  - [systemctl, enable, ssh]
-  - [systemctl, start, ssh]
+  - systemctl enable ssh
+  - systemctl start ssh
+  - echo "root:$PASSWORD" | chpasswd
+  - echo "$USERNAME:$PASSWORD" | chpasswd
+  - sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+  - sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+  - sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/g' /etc/ssh/sshd_config
+  - systemctl restart ssh
   - echo "Welcome to $HOSTNAME" > /etc/motd
 EOF
 
@@ -548,7 +580,8 @@ EOF
         fi
         
         # Build netdev parameter with port forwards
-        local netdev_params="user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
+        # Format: hostfwd=tcp::host_port-:guest_port
+        local netdev_params="user,id=n0,hostfwd=tcp::${SSH_PORT}-:22"
         
         if [[ -n "$PORT_FORWARDS" ]]; then
             IFS=',' read -ra forwards <<< "$PORT_FORWARDS"
@@ -557,7 +590,7 @@ EOF
                 
                 if validate_port_forward "$forward"; then
                     IFS=':' read -r host_port guest_port <<< "$forward"
-                    netdev_params="${netdev_params},hostfwd=tcp:127.0.0.1:${host_port}-:${guest_port}"
+                    netdev_params="${netdev_params},hostfwd=tcp::${host_port}-:${guest_port}"
                     print_status "INFO" "Port forward: $host_port -> $guest_port"
                 fi
             done
