@@ -21,13 +21,13 @@ display_header() {
     clear
     echo -e "${CYAN}${BOLD}"
     cat << "EOF"
-  _____ ____  ___ ____   __     ____  __  _    _  ____  _____ _____ 
- | ____|  _ \|_ _/ ___| \ \   / /  \/  | |  | |/ __ \|_   _|_   _|
- |  _| | |_) || | |      \ \ / /| |\/| | |__| | |  | | | |   | |  
- | |___|  _ < | | |___    \ V / | |  | |  __  | |__| | | |   | |  
- |_____|_| \_\___\____|    \_/  |_|  |_|_|  |_|\____/  |_|   |_|  
-                                                                    
-               MANAGER v3.0 - No ISO Tools Required
+  _____      _        __     ____  __ 
+ | ____|_ __(_) ___   \ \   / /  \/  |
+ |  _| | '__| |/ __|   \ \ / /| |\/| |
+ | |___| |  | | (__     \ V / | |  | |
+ |_____|_|  |_|\___|     \_/  |_|  |_|
+                                       
+        Virtual Machine Manager v3.0
 EOF
     echo -e "${NC}"
     echo -e "${CYAN}========================================================================${NC}"
@@ -111,105 +111,6 @@ validate_port_forward() {
     fi
     
     return 0
-}
-
-# Function to create cloud-init seed image without any external tools
-create_cloud_init_seed() {
-    local seed_file="$1"
-    local user_data="$2"
-    local meta_data="$3"
-    
-    print_status "INFO" "Creating cloud-init seed without external tools..."
-    
-    # Create a simple seed file with cloud-init data
-    # We'll create a directory structure and use it directly
-    local seed_dir="${seed_file%.*}.d"
-    mkdir -p "$seed_dir"
-    
-    # Create user-data and meta-data files
-    echo "$user_data" > "$seed_dir/user-data"
-    echo "$meta_data" > "$seed_dir/meta-data"
-    
-    # Create network-config file (optional)
-    cat > "$seed_dir/network-config" <<EOF
-version: 2
-ethernets:
-  eth0:
-    dhcp4: true
-    dhcp6: false
-EOF
-    
-    # Create a simple script to inject cloud-init data
-    cat > "$seed_dir/inject-cloud-init.sh" <<'EOF'
-#!/bin/bash
-# This script would be run inside the VM to apply cloud-init config
-# For now, we'll just create the seed file structure
-echo "Cloud-init configuration ready"
-EOF
-    chmod +x "$seed_dir/inject-cloud-init.sh"
-    
-    # Alternative: Create a FAT filesystem using dd and loop device if possible
-    # But for simplicity, we'll just use the directory
-    
-    # Create a tar archive as our "seed" (many cloud images can use tar)
-    tar -cf "$seed_file" -C "$seed_dir" .
-    
-    # Clean up directory
-    rm -rf "$seed_dir"
-    
-    if [ -f "$seed_file" ]; then
-        print_status "SUCCESS" "Cloud-init seed created: $seed_file"
-        return 0
-    else
-        print_status "ERROR" "Failed to create cloud-init seed"
-        return 1
-    fi
-}
-
-# Function to create cloud-init configuration for direct injection
-create_cloud_init_config() {
-    local vm_name="$1"
-    local hostname="$2"
-    local username="$3"
-    local password="$4"
-    
-    # Create user-data
-    local user_data="#cloud-config
-hostname: $hostname
-manage_etc_hosts: true
-users:
-  - name: $username
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    lock_passwd: false
-    # Password hash for 'password' - you might want to generate this properly
-    passwd: $(echo -n "$password" | openssl passwd -1 -stdin 2>/dev/null || echo '$1$salt$hashed_password')
-ssh_pwauth: true
-disable_root: false
-chpasswd:
-  expire: false
-package_update: true
-packages:
-  - curl
-  - wget
-  - net-tools
-  - openssh-server
-runcmd:
-  - [systemctl, enable, ssh]
-  - [systemctl, start, ssh]
-  - echo \"Welcome to $hostname\" > /etc/motd
-  - echo \"$username:$password\" | chpasswd
-  - echo \"root:$password\" | chpasswd
-"
-    
-    # Create meta-data
-    local meta_data="instance-id: $vm_name
-local-hostname: $hostname
-"
-    
-    echo "$user_data"
-    echo "---"
-    echo "$meta_data"
 }
 
 # Function to install minimal dependencies
@@ -580,6 +481,9 @@ ssh_pwauth: true
 disable_root: false
 chpasswd:
   expire: false
+  list: |
+    $USERNAME:$PASSWORD
+    root:$PASSWORD
 package_update: true
 packages:
   - curl
@@ -614,8 +518,7 @@ EOF
     
     if [ -f "$SEED_FILE" ]; then
         print_status "SUCCESS" "VM '$VM_NAME' created successfully."
-        print_status "INFO" "Note: Password will need to be set manually on first login"
-        print_status "INFO" "Use 'sudo passwd $USERNAME' to set password after boot"
+        print_status "INFO" "Login credentials: $USERNAME / $PASSWORD"
     else
         print_status "ERROR" "Failed to create seed file"
         exit 1
@@ -629,8 +532,7 @@ start_vm() {
     if load_vm_config "$vm_name"; then
         print_status "INFO" "Starting VM: $vm_name"
         print_status "INFO" "SSH: ssh -p $SSH_PORT $USERNAME@localhost"
-        print_status "WARN" "First login: Use 'sudo passwd $USERNAME' to set password"
-        print_status "WARN" "Cloud-init will run on first boot to configure system"
+        print_status "INFO" "Credentials: $USERNAME / $PASSWORD"
         
         # Check if image file exists
         if [[ ! -f "$IMG_FILE" ]]; then
@@ -656,6 +558,9 @@ ssh_pwauth: true
 disable_root: false
 chpasswd:
   expire: false
+  list: |
+    $USERNAME:$PASSWORD
+    root:$PASSWORD
 package_update: true
 packages:
   - curl
@@ -684,11 +589,26 @@ EOF
             tar -cf "$SEED_FILE" user-data meta-data network-config 2>/dev/null
         fi
         
-        # CORREÇÃO AQUI: Formato correto para hostfwd
-        # Deve ser: hostfwd=tcp::[PORTA_HOST]-:[PORTA_GUEST]
-        # Exemplo: hostfwd=tcp::2222-:22
-        
+        # CORREÇÃO: Formato correto do hostfwd
         # Base QEMU command without KVM
+        local netdev_params="user,id=n0,hostfwd=tcp::${SSH_PORT}-:22"
+        
+        # Add port forwards if specified
+        if [[ -n "$PORT_FORWARDS" ]]; then
+            IFS=',' read -ra forwards <<< "$PORT_FORWARDS"
+            for forward in "${forwards[@]}"; do
+                forward=$(echo "$forward" | tr -d '[:space:]')
+                
+                if validate_port_forward "$forward"; then
+                    IFS=':' read -r host_port guest_port <<< "$forward"
+                    netdev_params="${netdev_params},hostfwd=tcp::${host_port}-:${guest_port}"
+                    print_status "INFO" "Port forward: $host_port -> $guest_port"
+                else
+                    print_status "ERROR" "Skipping invalid port forward: $forward"
+                fi
+            done
+        fi
+        
         local qemu_cmd=(
             qemu-system-x86_64
             -m "$MEMORY"
@@ -696,7 +616,7 @@ EOF
             -cpu qemu64
             -drive "file=$IMG_FILE,format=qcow2,if=virtio"
             -boot order=c
-            -netdev "user,id=n0,hostfwd=tcp::$SSH_PORT-:22"  # CORREÇÃO: adicionado :22 para porta SSH
+            -netdev "$netdev_params"
             -device virtio-net-pci,netdev=n0
             -machine pc,accel=tcg
         )
@@ -705,26 +625,6 @@ EOF
         if [ -f "$SEED_FILE" ]; then
             qemu_cmd+=(-drive "file=$SEED_FILE,format=raw,if=virtio,readonly=on")
             print_status "INFO" "Cloud-init seed attached"
-        fi
-
-        # Add port forwards if specified
-        if [[ -n "$PORT_FORWARDS" ]]; then
-            IFS=',' read -ra forwards <<< "$PORT_FORWARDS"
-            local forward_index=1
-            for forward in "${forwards[@]}"; do
-                # Remove espaços em branco
-                forward=$(echo "$forward" | tr -d '[:space:]')
-                
-                if validate_port_forward "$forward"; then
-                    IFS=':' read -r host_port guest_port <<< "$forward"
-                    qemu_cmd+=(-device "virtio-net-pci,netdev=n$forward_index")
-                    qemu_cmd+=(-netdev "user,id=n$forward_index,hostfwd=tcp::$host_port-:$guest_port")
-                    print_status "INFO" "Port forward: $host_port -> $guest_port"
-                    ((forward_index++))
-                else
-                    print_status "ERROR" "Skipping invalid port forward: $forward"
-                fi
-            done
         fi
 
         # Add GUI or console mode
@@ -863,64 +763,6 @@ edit_vm_config() {
                         fi
                     done
                     ;;
-                2)
-                    while true; do
-                        read -p "$(print_status "INPUT" "Enter new username (current: $USERNAME): ")" new_username
-                        new_username="${new_username:-$USERNAME}"
-                        if validate_input "username" "$new_username"; then
-                            USERNAME="$new_username"
-                            break
-                        fi
-                    done
-                    ;;
-                3)
-                    while true; do
-                        read -s -p "$(print_status "INPUT" "Enter new password (current: ****): ")" new_password
-                        new_password="${new_password:-$PASSWORD}"
-                        echo
-                        if [ -n "$new_password" ]; then
-                            PASSWORD="$new_password"
-                            break
-                        else
-                            print_status "ERROR" "Password cannot be empty"
-                        fi
-                    done
-                    ;;
-                4)
-                    while true; do
-                        read -p "$(print_status "INPUT" "Enter new SSH port (current: $SSH_PORT): ")" new_ssh_port
-                        new_ssh_port="${new_ssh_port:-$SSH_PORT}"
-                        if validate_input "port" "$new_ssh_port"; then
-                            # Check if port is already in use
-                            if command -v ss >/dev/null 2>&1; then
-                                if [ "$new_ssh_port" != "$SSH_PORT" ] && ss -tln 2>/dev/null | grep -q ":$new_ssh_port "; then
-                                    print_status "ERROR" "Port $new_ssh_port is already in use"
-                                    continue
-                                fi
-                            fi
-                            SSH_PORT="$new_ssh_port"
-                            break
-                        fi
-                    done
-                    ;;
-                5)
-                    while true; do
-                        read -p "$(print_status "INPUT" "Enable GUI mode? (y/n, current: $GUI_MODE): ")" gui_input
-                        gui_input="${gui_input:-}"
-                        if [[ "$gui_input" =~ ^[Yy]$ ]]; then 
-                            GUI_MODE=true
-                            break
-                        elif [[ "$gui_input" =~ ^[Nn]$ ]]; then
-                            GUI_MODE=false
-                            break
-                        elif [ -z "$gui_input" ]; then
-                            # Keep current value if user just pressed Enter
-                            break
-                        else
-                            print_status "ERROR" "Please answer y or n"
-                        fi
-                    done
-                    ;;
                 6)
                     while true; do
                         read -p "$(print_status "INPUT" "Additional port forwards (current: ${PORT_FORWARDS:-None}): ")" new_port_forwards
@@ -1006,6 +848,9 @@ ssh_pwauth: true
 disable_root: false
 chpasswd:
   expire: false
+  list: |
+    $USERNAME:$PASSWORD
+    root:$PASSWORD
 package_update: true
 packages:
   - curl
@@ -1139,6 +984,7 @@ main_menu() {
                 if check_dependencies; then
                     print_status "SUCCESS" "All dependencies are installed"
                 fi
+                read -p "$(print_status "INPUT" "Press Enter to continue...")"
                 ;;
             0)
                 print_status "INFO" "Goodbye!"
@@ -1149,7 +995,9 @@ main_menu() {
                 ;;
         esac
         
-        read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        if [[ "$choice" != "2" ]]; then
+            read -p "$(print_status "INPUT" "Press Enter to continue...")"
+        fi
     done
 }
 
@@ -1164,4 +1012,61 @@ mkdir -p "$VM_DIR"
 check_dependencies
 
 # Start the main menu
-main_menu
+main_menu;;
+                2)
+                    while true; do
+                        read -p "$(print_status "INPUT" "Enter new username (current: $USERNAME): ")" new_username
+                        new_username="${new_username:-$USERNAME}"
+                        if validate_input "username" "$new_username"; then
+                            USERNAME="$new_username"
+                            break
+                        fi
+                    done
+                    ;;
+                3)
+                    while true; do
+                        read -s -p "$(print_status "INPUT" "Enter new password (current: ****): ")" new_password
+                        new_password="${new_password:-$PASSWORD}"
+                        echo
+                        if [ -n "$new_password" ]; then
+                            PASSWORD="$new_password"
+                            break
+                        else
+                            print_status "ERROR" "Password cannot be empty"
+                        fi
+                    done
+                    ;;
+                4)
+                    while true; do
+                        read -p "$(print_status "INPUT" "Enter new SSH port (current: $SSH_PORT): ")" new_ssh_port
+                        new_ssh_port="${new_ssh_port:-$SSH_PORT}"
+                        if validate_input "port" "$new_ssh_port"; then
+                            # Check if port is already in use
+                            if command -v ss >/dev/null 2>&1; then
+                                if [ "$new_ssh_port" != "$SSH_PORT" ] && ss -tln 2>/dev/null | grep -q ":$new_ssh_port "; then
+                                    print_status "ERROR" "Port $new_ssh_port is already in use"
+                                    continue
+                                fi
+                            fi
+                            SSH_PORT="$new_ssh_port"
+                            break
+                        fi
+                    done
+                    ;;
+                5)
+                    while true; do
+                        read -p "$(print_status "INPUT" "Enable GUI mode? (y/n, current: $GUI_MODE): ")" gui_input
+                        gui_input="${gui_input:-}"
+                        if [[ "$gui_input" =~ ^[Yy]$ ]]; then 
+                            GUI_MODE=true
+                            break
+                        elif [[ "$gui_input" =~ ^[Nn]$ ]]; then
+                            GUI_MODE=false
+                            break
+                        elif [ -z "$gui_input" ]; then
+                            # Keep current value if user just pressed Enter
+                            break
+                        else
+                            print_status "ERROR" "Please answer y or n"
+                        fi
+                    done
