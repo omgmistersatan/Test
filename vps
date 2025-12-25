@@ -548,7 +548,7 @@ EOF
         fi
         
         # Build netdev parameter with port forwards
-        local netdev_params="user,id=n0,hostfwd=tcp::${SSH_PORT}-:22"
+        local netdev_params="user,id=n0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"
         
         if [[ -n "$PORT_FORWARDS" ]]; then
             IFS=',' read -ra forwards <<< "$PORT_FORWARDS"
@@ -557,7 +557,7 @@ EOF
                 
                 if validate_port_forward "$forward"; then
                     IFS=':' read -r host_port guest_port <<< "$forward"
-                    netdev_params="${netdev_params},hostfwd=tcp::${host_port}-:${guest_port}"
+                    netdev_params="${netdev_params},hostfwd=tcp:127.0.0.1:${host_port}-:${guest_port}"
                     print_status "INFO" "Port forward: $host_port -> $guest_port"
                 fi
             done
