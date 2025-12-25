@@ -492,7 +492,28 @@ ethernets:
 EOF
 
     print_status "INFO" "Creating seed file..."
-    tar -cf "$SEED_FILE" user-data meta-data network-config 2>/dev/null
+    
+    # Create a simple NoCloud datasource directory
+    mkdir -p "$VM_DIR/$VM_NAME-seed"
+    cp user-data "$VM_DIR/$VM_NAME-seed/"
+    cp meta-data "$VM_DIR/$VM_NAME-seed/"
+    cp network-config "$VM_DIR/$VM_NAME-seed/"
+    
+    # Create an ISO image if genisoimage is available, otherwise use tar
+    if command -v genisoimage >/dev/null 2>&1; then
+        genisoimage -output "$SEED_FILE" -volid cidata -joliet -rock "$VM_DIR/$VM_NAME-seed" 2>/dev/null
+        rm -rf "$VM_DIR/$VM_NAME-seed"
+        print_status "SUCCESS" "Cloud-init ISO created"
+    elif command -v mkisofs >/dev/null 2>&1; then
+        mkisofs -output "$SEED_FILE" -volid cidata -joliet -rock "$VM_DIR/$VM_NAME-seed" 2>/dev/null
+        rm -rf "$VM_DIR/$VM_NAME-seed"
+        print_status "SUCCESS" "Cloud-init ISO created"
+    else
+        # Fallback to tar
+        tar -cf "$SEED_FILE" -C "$VM_DIR/$VM_NAME-seed" . 2>/dev/null
+        rm -rf "$VM_DIR/$VM_NAME-seed"
+        print_status "WARN" "Using tar format (ISO recommended)"
+    fi
     
     if [ -f "$SEED_FILE" ]; then
         print_status "SUCCESS" "VM '$VM_NAME' created successfully"
@@ -606,6 +627,7 @@ EOF
             -netdev "$netdev_params"
             -device virtio-net-pci,netdev=n0
             -machine pc,accel=tcg
+            -kernel-append "console=ttyS0"
         )
 
         if [ -f "$SEED_FILE" ]; then
